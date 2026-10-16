@@ -17,6 +17,8 @@ A small, **stdlib-only Python REST bridge** that exposes your Mac's **Apple Note
 
 No pip installs, no frameworks — one server file and two thin CLI clients, all Python 3.9+ stdlib.
 
+**Author:** Andrew Raisbeck
+
 ## Features
 
 - 📝 **Apple Notes**: list, read, create, delete — including folder targeting and HTML bodies

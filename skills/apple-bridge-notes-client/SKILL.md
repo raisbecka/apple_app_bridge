@@ -2,7 +2,7 @@
 name: apple-bridge-notes-client
 description: "Drive Apple Notes via the bridge REST client."
 version: 1.0.0
-author: Hermes Agent
+author: Andrew Raisbeck, Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
