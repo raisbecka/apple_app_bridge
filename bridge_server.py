@@ -69,7 +69,7 @@ class BridgeError(Exception):
 def run_cmd(argv, timeout=SUBPROC_TIMEOUT):
     """Run a command, return (returncode, stdout, stderr)."""
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)  # noqa: PLW1510 - returncode handled explicitly
     except FileNotFoundError:
         raise BridgeError(500, f"backend binary not found: {argv[0]}",
                           "set APPLE_BRIDGE_MEMO / APPLE_BRIDGE_REMINDCTL")
@@ -275,9 +275,7 @@ REMINDER_FILTERS = {"today", "tomorrow", "week", "overdue", "all"}
 
 def reminders_list(rem_filter=None):
     rem_filter = rem_filter or "all"
-    if rem_filter in REMINDER_FILTERS:
-        data = run_json([REMINDCTL_BIN, rem_filter, "--json"], "remindctl list")
-    elif re.fullmatch(r"\d{4}-\d{2}-\d{2}", rem_filter):
+    if rem_filter in REMINDER_FILTERS or re.fullmatch(r"\d{4}-\d{2}-\d{2}", rem_filter):
         data = run_json([REMINDCTL_BIN, rem_filter, "--json"], "remindctl list")
     else:
         raise BridgeError(400, "invalid filter",
@@ -343,8 +341,8 @@ def reminders_delete(reminder_id):
 class Handler(BaseHTTPRequestHandler):
     server_version = "AppleAppBridge/1.0"
 
-    def log_message(self, format, *args):  # noqa: A002 - stdlib signature
-        sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), format % args))
+    def log_message(self, format, *args):
+        sys.stderr.write(f"[{self.log_date_time_string()}] {format % args}\n")
 
     # -- response helpers ---------------------------------------------------
 

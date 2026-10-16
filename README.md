@@ -1,52 +1,74 @@
 # apple_app_bridge
 
-A small, stdlib-only Python REST bridge that exposes the host Mac's
-**Apple Notes** (`memo` tool / AppleScript) and **Apple Reminders**
-(`remindctl`) to Docker containers running on the same machine.
+A small, **stdlib-only Python REST bridge** that exposes your Mac's **Apple Notes** and **Apple Reminders** to Docker containers (or any process) running on the same machine.
 
 ```
-docker container ──HTTP──> 127.0.0.1:6002 (bridge_server.py) ──> memo / remindctl / osascript
+┌─────────────────────┐        HTTP/JSON        ┌──────────────────────────────┐
+│  Docker container   │ ─────────────────────► │  Mac host (127.0.0.1:6002)   │
+│  notes_client.py    │                         │  bridge_server.py            │
+│  reminders_client.py│ ◄─────────────────────  │        │                     │
+└─────────────────────┘                         │        ▼                     │
+                                                │  memo / remindctl / osascript│
+                                                │        │                     │
+                                                │        ▼                     │
+                                                │  Notes.app · Reminders.app   │
+                                                └──────────────────────────────┘
 ```
 
-## Files
+No pip installs, no frameworks — one server file and two thin CLI clients, all Python 3.9+ stdlib.
 
-| File | Purpose |
-|---|---|
-| `bridge_server.py` | The REST server (stdlib only, no deps) |
-| `notes_client.py` | CLI client for the Notes API |
-| `reminders_client.py` | CLI client for the Reminders API |
+## Features
 
-## Security model
+- 📝 **Apple Notes**: list, read, create, delete — including folder targeting and HTML bodies
+- ✅ **Apple Reminders**: list (by date filter), read, create (due + alarm), complete, delete
+- 🔒 **Loopback-only by default** — never reachable from your LAN
+- 🔑 **Optional shared secret** (`X-Apple-Bridge-Key` header)
+- 🧯 **Read-only mode** and per-module kill switches
+- 🐳 **Docker-friendly**: clients work from any container on the host's bridge network
+- 📡 Resilient AppleScript handling (retries on transient `-1700`, verify-and-retry deletes)
 
-- **Binds to `127.0.0.1` only** by default. Containers reach it via the
-  Docker bridge gateway IP (find it with `ip route show default` inside the
-  container, commonly `192.168.65.2` for Docker Desktop). It is never
-  reachable from other machines on the LAN or the internet.
-- **Optional shared secret**: start the server with `--api-key <key>` (or
-  `APPLE_BRIDGE_API_KEY`). Every request then needs the header
-  `X-Apple-Bridge-Key: <key>`.
-- **Read-only mode**: `--read-only` makes all write endpoints return
-  `403 read-only access`.
-- **Module switches**: `--no-notes` / `--no-reminders` (or
-  `APPLE_BRIDGE_NOTES=false` / `APPLE_BRIDGE_REMINDERS=false`) disable a
-  whole module; its endpoints return `503`.
+## Prerequisites
 
-## Running the server
+- macOS with Notes.app and Reminders.app
+- [`memo`](https://github.com/steipete/memo) on the host (default: `~/.local/bin/memo`)
+- `remindctl` on the host (default: `~/.local/bin/remindctl`) with Reminders access granted
+- Python 3.9+ (stdlib only)
+
+## Quick start
+
+### 1. Run the server (on the Mac)
 
 ```bash
-# minimal
 python3 bridge_server.py
-
-# typical: custom port, read-write, with a shared secret
-python3 bridge_server.py --port 6002 --api-key "$(openssl rand -hex 16)"
-
-# read-only, reminders disabled
-python3 bridge_server.py --read-only --no-reminders
 ```
 
-All flags also work as environment variables:
+Typical hardened setup:
 
-| Flag | Env var | Default |
+```bash
+python3 bridge_server.py --port 6002 --api-key "$(openssl rand -hex 16)"
+```
+
+### 2. Use the clients
+
+```bash
+# from the host
+python3 notes_client.py list
+python3 notes_client.py create "Groceries" --folder Notes --content -
+python3 reminders_client.py list today
+python3 reminders_client.py create "Call dentist" --due tomorrow
+```
+
+```bash
+# from a Docker container — target the host's bridge gateway IP,
+# NOT 127.0.0.1 (that's the container's own loopback)
+python3 notes_client.py --host 192.168.65.2 --port 6002 list
+```
+
+### Configuration
+
+Every flag has an environment-variable twin; resolution order is **CLI flag → env var → default**:
+
+| Server flag | Env var | Default |
 |---|---|---|
 | `--port N` | `APPLE_BRIDGE_PORT` | `6002` |
 | `--host ADDR` | — | `127.0.0.1` |
@@ -55,11 +77,11 @@ All flags also work as environment variables:
 | `--no-reminders` | `APPLE_BRIDGE_REMINDERS=false` | reminders on |
 | `--api-key K` | `APPLE_BRIDGE_API_KEY` | off |
 
-Backend binary locations are overridable via `APPLE_BRIDGE_MEMO` and
-`APPLE_BRIDGE_REMINDCTL` (defaults: `~/.local/bin/memo`,
-`~/.local/bin/remindctl`).
+Client flags: `--host` / `--port` / `--api-key` (env: `APPLE_BRIDGE_HOST`, `APPLE_BRIDGE_PORT`, `APPLE_BRIDGE_API_KEY`).
 
-## API
+Backend binary locations are overridable via `APPLE_BRIDGE_MEMO` and `APPLE_BRIDGE_REMINDCTL`.
+
+## API reference
 
 Base URL: `http://<host>:<port>`
 
@@ -67,10 +89,10 @@ Base URL: `http://<host>:<port>`
 
 | Method & path | Body / query | Description |
 |---|---|---|
-| `GET /notes/v1/list` | `?folder=Name` | List notes (optionally one folder). Returns `{count, notes:[{folder,title,id}]}` |
+| `GET /notes/v1/list` | `?folder=Name` | List notes → `{count, notes:[{folder,title,id}]}` |
 | `GET /notes/v1/get` | `?id=x-coredata://.../ICNote/pNN` | Full note incl. HTML body |
-| `POST /notes/v1/create` | `{"title", "content_md", "folder"}` | Create note (`folder` defaults to `Notes`) |
-| `POST /notes/v1/delete` | `{"id"}` | Delete note |
+| `POST /notes/v1/create` | `{"title", "content_md", "folder"?}` | Create note (`folder` defaults to `Notes`) |
+| `POST /notes/v1/delete` | `{"id"}` | Delete note (server verifies and retries) |
 
 ### Reminders
 
@@ -83,61 +105,46 @@ Base URL: `http://<host>:<port>`
 | `POST /reminders/v1/complete` | `{"id"}` | Mark complete |
 | `POST /reminders/v1/delete` | `{"id"}` | Delete |
 
-`due` / `alarm` accept `today`, `tomorrow`, `yesterday`, `YYYY-MM-DD`,
-`YYYY-MM-DD HH:mm`, or ISO 8601.
+`due` / `alarm` accept `today`, `tomorrow`, `yesterday`, `YYYY-MM-DD`, `YYYY-MM-DD HH:mm`, or ISO 8601.
 
-### Meta
+### Meta & errors
 
-`GET /` — service name, mode, module state, endpoint list.
+- `GET /` — service name, mode, module state, endpoint list
+- All errors are JSON: `{"error": "...", "detail": "..."}` with the appropriate status
+  (400 bad input · 401 bad key · 403 read-only · 404 not found · 405 bad method ·
+  413 body too large · 503 module disabled · 500 backend failure · 504 backend timeout)
 
-### Errors
+Client exit codes: `0` success · `1` API error (JSON on stdout) · `2` bridge unreachable.
 
-All errors are JSON: `{"error": "...", "detail": "..."}` with the
-appropriate HTTP status (400 bad input, 401 bad key, 403 read-only,
-404 not found, 405 bad method, 503 module disabled, 500 backend failure,
-504 backend timeout).
+## Security model
 
-## Clients
-
-Both clients take the endpoint from CLI flags, then env vars, then
-defaults:
-
-```
---host / APPLE_BRIDGE_HOST   (default 127.0.0.1)
---port / APPLE_BRIDGE_PORT   (default 6002)
---api-key / APPLE_BRIDGE_API_KEY
-```
-
-```bash
-# from the host
-python3 notes_client.py list
-python3 notes_client.py create "Groceries" --folder "Notes" --content -
-python3 reminders_client.py list today
-python3 reminders_client.py create "Call dentist" --due tomorrow
-
-# from a Docker container (bridge gateway IP as host)
-docker run --rm -it python:3.12-slim \
-  python /work/notes_client.py --host 192.168.65.2 --port 6002 list
-```
-
-Exit codes: `0` success, `1` API error (JSON printed to stdout),
-`2` bridge unreachable.
+- **Binds to `127.0.0.1` only** by default. Containers reach it via the Docker bridge
+  gateway IP (find it with `ip route show default` inside the container; commonly
+  `192.168.65.2` on Docker Desktop for Mac). Never exposed on the LAN or internet.
+- **Optional shared secret**: with `--api-key`, every request must carry
+  `X-Apple-Bridge-Key: <key>` or it gets a `401`.
+- **Read-only mode**: `--read-only` makes all write endpoints return `403`.
+- **Module switches**: `--no-notes` / `--no-reminders` disable a whole module (`503`).
+- ⚠️ Do **not** publish port 6002 with `-p` — that would expose Apple Notes/Reminders to your LAN.
 
 ## Docker usage notes
 
-- The server must be running on the **host** (it drives AppleScript /
-  the native apps, so it cannot itself run in a container).
-- From a container on the default `bridge` network, the host is the
-  gateway IP (`192.168.65.2` on Docker Desktop for Mac). On Linux with
-  the default bridge, `host.docker.internal` also works if the
-  `--add-host=host.docker.internal:host-gateway` flag is set.
-- Keep the server on loopback; do **not** publish port 6002 with
-  `-p` — that would expose Apple Notes/Reminders to the LAN.
+- The server must run on the **host** — it drives AppleScript and the native apps, so it
+  cannot itself run in a container.
+- From a container on the default `bridge` network, the host is the gateway IP
+  (`192.168.65.2` on Docker Desktop for Mac). On Linux, use
+  `--add-host=host.docker.internal:host-gateway` and target `host.docker.internal`.
 
-## Prerequisites
+## Project layout
 
-- macOS with Notes.app and Reminders.app
-- `memo` on the host (`~/.local/bin/memo`)
-- `remindctl` on the host (`~/.local/bin/remindctl`) with Reminders
-  access granted (`remindctl status`)
-- Python 3.9+ (stdlib only — no pip installs needed)
+```
+apple_app_bridge/
+├── bridge_server.py       # REST server (stdlib only, no deps)
+├── notes_client.py        # CLI client for the Notes API
+├── reminders_client.py    # CLI client for the Reminders API
+└── skills/                # agent skills for the two clients
+```
+
+## License
+
+MIT
