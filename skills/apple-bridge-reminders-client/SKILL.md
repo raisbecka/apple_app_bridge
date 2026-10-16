@@ -2,7 +2,7 @@
 name: apple-bridge-reminders-client
 description: "Drive Apple Reminders via the bridge REST client."
 version: 1.0.0
-author: Hermes Agent, Hermes Agent
+author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
